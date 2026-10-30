@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>웃음 무한루프</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  #play {
+    position: fixed; left: 50%; bottom: 8vh; transform: translateX(-50%);
+    font: bold 20px sans-serif; padding: 14px 28px; border: 0; border-radius: 999px;
+    background: #ff5d8f; color: #fff; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+  }
+  body.capture canvas { height: auto; width: 720px; }
+  body.capture #play { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<button id="play">▶ 소리 켜고 재생</button>
+<audio id="snd" src="laugh-loop.wav" loop preload="auto"></audio>
+<script>
+// 16초 루프: 강아지 웃음 → 고양이로 변신 → 정색 → 고양이 웃음 → 강아지로 변신 → 정색 → 처음으로
+// 타임라인은 make_audio.py 와 같아야 소리가 맞는다.
+const W = 720, H = 1280, T = 16;
+const FONT = '"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR","WenQuanYi Zen Hei",sans-serif';
+const LINE = '#2b211b';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const smooth = (a, b, x) => { const k = clamp((x - a) / (b - a)); return k * k * (3 - 2 * k); };
+const hex = h => h[0] === '#' ? [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)) : h.match(/\d+/g).map(Number);
+const mix = (c1, c2, k) => { const a = hex(c1), b = hex(c2); return `rgb(${a.map((v, i) => Math.round(lerp(v, b[i], k))).join(',')})`; };
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// L: 웃음 강도(0~1), m: 변신(0 강아지 ~ 1 고양이), d: 정색(0~1)
+function state(t) {
+  t = ((t % T) + T) % T;
+  let L = 0, m = 0, d = 0;
+  if (t < 1)         { L = 0.08 * t; d = 1 - t; }
+  else if (t < 6)    { const k = (t - 1) / 5; L = 0.1 + 0.9 * k * k; }
+  else if (t < 7.5)  { L = 1; m = smooth(6, 7.5, t); }
+  else if (t < 8.2)  { L = 1; m = 1; }
+  else if (t < 10.2) { m = 1; d = 1; }
+  else if (t < 14)   { const k = (t - 10.2) / 3.8; L = 0.1 + 0.9 * k * k; m = 1; }
+  else if (t < 15.5) { L = 1; m = 1 - smooth(14, 15.5, t); }
+  else               { d = 1; }
+  let fx = 0;
+  if (t >= 6 && t < 7.5) fx = Math.sin(Math.PI * (t - 6) / 1.5);
+  if (t >= 14 && t < 15.5) fx = Math.sin(Math.PI * (t - 14) / 1.5);
+  return { t, L, m, d, fx };
+}
+
+function caption(t) {
+  if (t < 2.5 || t >= 15.5) return '평범한 강아지입니다';
+  if (t < 4.5) return '근데 웃음이 터졌다';
+  if (t < 6) return '멈출 수가 없다!!';
+  if (t < 8.2) return '어…? 너무 웃었나…?';
+  if (t < 10.2) return '…고양이가 됐다';
+  if (t < 12.5) return '근데 고양이도 웃음이 터졌다';
+  if (t < 14) return '멈출 수가 없다!!';
+  return '어…? 설마…';
+}
+
+// 날아가는 웃음 글자들 (미리 계산해서 매 프레임 같은 결과)
+const parts = [];
+(() => {
+  const r = rng(7); let acc = 0;
+  for (let t = 0; t < T; t += 1 / 60) {
+    const s = state(t);
+    const rate = s.d > 0.5 || s.L < 0.12 ? 0 : 1 + 9 * s.L;
+    acc += rate / 60;
+    while (acc >= 1) {
+      acc -= 1;
+      const words = s.m > 0.5 ? ['냥하하', '냐하하', 'ㅋㅋㅋ', '냥ㅋㅋ', '캬하하'] : ['멍하하', '하하하', 'ㅋㅋㅋ', '왈하하', '크하하'];
+      parts.push({ b: t, w: words[r() * words.length | 0], a: -Math.PI / 2 + (r() - 0.5) * 2.4,
+        sp: 200 + r() * 240, sz: 30 + 60 * s.L + r() * 20, rot: (r() - 0.5) * 0.7, c: r() * 4 | 0 });
+    }
+  }
+})();
+
+function shape(fill, stroke = true) {
+  ctx.fillStyle = fill; ctx.fill();
+  if (stroke) { ctx.strokeStyle = LINE; ctx.lineWidth = 6; ctx.stroke(); }
+}
+function ellipse(x, y, rx, ry, fill, stroke) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); shape(fill, stroke); }
+
+function drawEar(side, s, fur) {
+  const dog = { p0: [-70, -135], c1: [-205, -175], p1: [-222, 75], c2: [-140, 85], p2: [-150, -80] };
+  const cat = { p0: [-35, -135], c1: [-70, -190], p1: [-135, -240], c2: [-178, -150], p2: [-162, -70] };
+  const P = k => [lerp(dog[k][0], cat[k][0], s.m), lerp(dog[k][1], cat[k][1], s.m)];
+  const p0 = P('p0'), c1 = P('c1'), p1 = P('p1'), c2 = P('c2'), p2 = P('p2');
+  const wob = Math.sin(s.t * 2 * Math.PI * 5 + side) * 0.18 * s.L * (1 - s.m * 0.7);
+  ctx.save(); ctx.scale(side, 1);
+  ctx.translate(p0[0], p0[1]); ctx.rotate(wob); ctx.translate(-p0[0], -p0[1]);
+  const path = (k) => {
+    const cx = (p0[0] + p1[0] + p2[0]) / 3, cy = (p0[1] + p1[1] + p2[1]) / 3;
+    const q = p => [lerp(cx, p[0], k), lerp(cy, p[1], k)];
+    const a = q(p0), b = q(c1), c = q(p1), e = q(c2), f = q(p2);
+    ctx.beginPath(); ctx.moveTo(...a); ctx.quadraticCurveTo(...b, ...c); ctx.quadraticCurveTo(...e, ...f); ctx.closePath();
+  };
+  path(1); shape(mix('#9c5a26', fur, s.m));
+  if (s.m > 0) { ctx.globalAlpha = s.m; path(0.55); shape('#f4a7b9', false); ctx.globalAlpha = 1; }
+  ctx.restore();
+}
+
+function drawEyes(s, fur) {
+  const closeK = smooth(0.35, 0.6, s.L) * (1 - s.d);
+  const open = 1 - closeK;
+  for (const side of [-1, 1]) {
+    const x = side * 62, y = -30;
+    if (open > 0.02) {
+      ctx.save(); ctx.translate(x, y); ctx.scale(1, open);
+      if (s.m < 1) { ctx.globalAlpha = 1 - s.m; ellipse(0, 0, 22, 22, '#1d1714', false); ellipse(-6, -8, 7, 7, '#fff', false); }
+      if (s.m > 0) {
+        ctx.globalAlpha = s.m; ellipse(0, 0, 27, 23, '#9bd35a');
+        ellipse(0, 0, 6, 18, '#1d1714', false); ellipse(-8, -8, 5, 5, '#fff', false);
+      }
+      ctx.globalAlpha = 1;
+      if (s.d > 0) {  // 반쯤 감긴 정색 눈꺼풀
+        const lid = -30 + 30 * s.d;
+        ctx.save(); ctx.beginPath(); ctx.ellipse(0, 0, 32, 30, 0, 0, Math.PI * 2); ctx.clip();
+        ctx.fillStyle = fur; ctx.fillRect(-40, -40, 80, lid + 40);
+        ctx.restore();
+        ctx.beginPath(); ctx.moveTo(-30, lid); ctx.lineTo(30, lid);
+        ctx.strokeStyle = LINE; ctx.lineWidth = 6 * s.d; ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (closeK > 0) {  // ^ ^ 웃는 눈
+      ctx.globalAlpha = closeK; ctx.beginPath();
+      ctx.moveTo(x - 26, y + 8); ctx.quadraticCurveTo(x, y - 30, x + 26, y + 8);
+      ctx.strokeStyle = LINE; ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.stroke(); ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawMouth(s) {
+  const w = lerp(34, 13, s.m), h = lerp(26, 11, s.m), ny = 22;
+  const y0 = ny + h * 0.6, o = s.L * (1 - s.d);
+  if (o > 0.05) {
+    const mw = 25 + 62 * o, mh = 10 + 85 * o, top = y0 + 16;
+    ctx.beginPath(); ctx.moveTo(-mw, top); ctx.quadraticCurveTo(0, top - 8, mw, top);
+    ctx.quadraticCurveTo(mw * 0.9, top + mh * 1.6, 0, top + mh * 1.6); ctx.quadraticCurveTo(-mw * 0.9, top + mh * 1.6, -mw, top);
+    ctx.closePath(); shape('#5a1a22');
+    ctx.save(); ctx.clip();
+    ellipse(0, top + mh * 1.45, mw * lerp(0.65, 0.45, s.m), mh * 0.55, '#f27a8a', false);
+    ctx.restore();
+    if (s.m > 0) {
+      ctx.globalAlpha = s.m; ctx.fillStyle = '#fff';
+      for (const sd of [-1, 1]) { ctx.beginPath(); ctx.moveTo(sd * mw * 0.75, top - 2); ctx.lineTo(sd * mw * 0.55, top - 2); ctx.lineTo(sd * mw * 0.64, top + 14 + 8 * o); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
+  }
+  // 코 밑 ω 입
+  const cy = lerp(y0 + 32, y0 + 16, s.d * 0.85);
+  ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(0, y0 + 14);
+  ctx.moveTo(0, y0 + 14); ctx.quadraticCurveTo(-14, cy, -30, y0 + 16);
+  ctx.moveTo(0, y0 + 14); ctx.quadraticCurveTo(14, cy, 30, y0 + 16);
+  ctx.strokeStyle = LINE; ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.stroke();
+  // 코
+  ctx.beginPath(); ctx.moveTo(-w, ny - h / 2); ctx.quadraticCurveTo(0, ny - h, w, ny - h / 2);
+  ctx.quadraticCurveTo(w, ny + h * 0.2, 0, ny + h * 0.6); ctx.quadraticCurveTo(-w, ny + h * 0.2, -w, ny - h / 2);
+  shape(mix('#1d1714', '#f28ca6', s.m), s.m > 0.5);
+  if (s.m < 1) { ctx.globalAlpha = 1 - s.m; ellipse(-w * 0.35, ny - h * 0.45, w * 0.25, h * 0.15, '#fff', false); ctx.globalAlpha = 1; }
+}
+
+function drawCharacter(s) {
+  const fur = mix('#e3a857', '#8e97a6', s.m), light = mix('#f7e3c0', '#e9ecf1', s.m);
+  const live = 1 - s.d;
+  const bounce = -Math.abs(Math.sin(s.t * 2 * Math.PI * 3)) * 28 * s.L * live;
+  const sc = lerp(0.85, 1.3, s.L) * (1 + 0.12 * s.fx);
+  const squash = Math.sin(s.t * 2 * Math.PI * 6) * 0.04 * s.L + Math.sin(s.t * 40) * 0.08 * s.fx;
+  ctx.save();
+  ctx.translate(W / 2 + Math.sin(s.t * 37) * 6 * s.L * live, 620 + bounce);
+  ctx.rotate(Math.sin(s.t * 2 * Math.PI * 2.5) * 0.07 * s.L * live);
+  ctx.scale(sc * (1 + squash), sc * (1 - squash));
+
+  // 꼬리
+  ctx.save(); ctx.translate(110, 320);
+  ctx.rotate(Math.sin(s.t * 2 * Math.PI * 4) * 0.45 * (0.3 + s.L) * (1 - 0.8 * s.d));
+  ctx.beginPath(); ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(lerp(110, 150, s.m), lerp(-20, 0, s.m), lerp(120, 140, s.m), lerp(-120, -200, s.m));
+  if (s.m > 0) ctx.quadraticCurveTo(lerp(120, 120, s.m), lerp(-120, -250, s.m), lerp(120, 90, s.m), lerp(-120, -230, s.m));
+  ctx.lineCap = 'round'; ctx.strokeStyle = LINE; ctx.lineWidth = lerp(46, 36, s.m); ctx.stroke();
+  ctx.strokeStyle = fur; ctx.lineWidth = lerp(34, 24, s.m); ctx.stroke();
+  ctx.restore();
+
+  // 몸
+  ellipse(-70, 375, 50, 30, fur); ellipse(70, 375, 50, 30, fur);
+  ellipse(0, 250, 145, 135, fur);
+  ellipse(0, 285, 85, 85, light, false);
+  // 배 잡는 앞발
+  const hold = smooth(0.55, 0.9, s.L) * live;
+  for (const sd of [-1, 1]) ellipse(sd * lerp(150, 50, hold), lerp(300, 285, hold), 38, 30, fur);
+
+  // 귀, 머리
+  drawEar(-1, s, fur); drawEar(1, s, fur);
+  ellipse(0, 0, lerp(175, 168, s.m), lerp(155, 145, s.m), fur);
+  if (s.m > 0) {  // 고양이 이마 줄무늬
+    ctx.globalAlpha = s.m; ctx.strokeStyle = '#5f6672'; ctx.lineWidth = 12; ctx.lineCap = 'round';
+    ctx.beginPath(); for (const x of [-34, 0, 34]) { ctx.moveTo(x, -142); ctx.lineTo(x * 0.8, x ? -110 : -100); } ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  ctx.globalAlpha = 0.15 + 0.55 * s.L * live;
+  ellipse(-118, 42, 30, 17, '#ff7f9e', false); ellipse(118, 42, 30, 17, '#ff7f9e', false);
+  ctx.globalAlpha = 1;
+  ellipse(0, 55, lerp(100, 62, s.m), lerp(72, 45, s.m), light, false);
+  drawEyes(s, fur);
+  drawMouth(s);
+  if (s.m > 0) {  // 수염
+    ctx.globalAlpha = s.m; ctx.strokeStyle = LINE; ctx.lineWidth = 4;
+    ctx.beginPath();
+    for (const sd of [-1, 1]) for (const [a, b] of [[45, 25], [58, 62], [70, 100]]) { ctx.moveTo(sd * 60, a); ctx.lineTo(sd * 195, b); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  // 눈물
+  const tear = clamp((s.L - 0.7) / 0.3) * live;
+  if (tear > 0) {
+    for (const sd of [-1, 1]) for (let i = 0; i < 4; i++) {
+      const p = (s.t * 2.5 + i / 4 + (sd > 0 ? 0.12 : 0)) % 1;
+      ctx.globalAlpha = tear * (1 - p);
+      ellipse(sd * (85 + p * 190), -25 - 90 * p + 260 * p * p, 11 * (1 - p * 0.4), 14 * (1 - p * 0.4), '#7ec8f5', false);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+function drawBubble(text, x, y, alpha) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.font = `bold 54px ${FONT}`; const w = ctx.measureText(text).width + 60;
+  ctx.beginPath(); ctx.roundRect(x - w / 2, y - 45, w, 90, 45);
+  ctx.moveTo(x - 20, y + 44); ctx.lineTo(x - 40, y + 80); ctx.lineTo(x + 10, y + 44);
+  shape('#fff');
+  ctx.fillStyle = LINE; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y + 2);
+  ctx.restore();
+}
+
+function render(time) {
+  const s = state(time), t = s.t;
+  // 배경: 웃을수록 뜨거운 색, 정색하면 차가운 회색
+  const top = mix(mix('#fff3c9', '#ffb3c7', s.L), '#b9c3cf', s.d);
+  const bot = mix(mix('#ffe08a', '#ff7aa2', s.L), '#8f9aa8', s.d);
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, top); g.addColorStop(1, bot);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // 만화 집중선
+  const burst = 0.3 * s.L * (1 - s.d);
+  if (burst > 0) {
+    ctx.save(); ctx.translate(W / 2, 640); ctx.rotate(t * 0.6); ctx.fillStyle = `rgba(255,255,255,${burst})`;
+    for (let i = 0; i < 18; i++) { ctx.rotate(Math.PI / 9); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(1400, -110); ctx.lineTo(1400, 110); ctx.fill(); }
+    ctx.restore();
+  }
+
+  drawCharacter(s);
+
+  // 변신 연기와 반짝이
+  if (s.fx > 0) {
+    for (let i = 0; i < 14; i++) {
+      const a = i / 14 * Math.PI * 2 + t * 1.5, r = 230 + 40 * Math.sin(i * 3 + t * 6);
+      ctx.globalAlpha = 0.85 * s.fx;
+      ellipse(W / 2 + Math.cos(a) * r, 600 + Math.sin(a) * r * 1.1, 70 * s.fx + 15 * (i % 3), 60 * s.fx + 10 * (i % 2), '#ffffff', false);
+    }
+    ctx.fillStyle = '#fff6a8';
+    for (let i = 0; i < 10; i++) {
+      const a = i * 2.4 + t * 3, r = 320 * s.fx, x = W / 2 + Math.cos(a) * r, y = 600 + Math.sin(a) * r, k = 26 * s.fx;
+      ctx.beginPath(); for (let j = 0; j < 8; j++) { const rr = j % 2 ? k * 0.3 : k; ctx.lineTo(x + Math.cos(j * Math.PI / 4) * rr, y + Math.sin(j * Math.PI / 4) * rr); } ctx.fill();
+    }
+    ctx.globalAlpha = 0.6 * Math.pow(s.fx, 4); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1;
+  }
+
+  // 웃음 글자
+  const colors = ['#ff3d7f', '#ff8a00', '#7a4dff', '#00a0d6'];
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const p of parts) {
+    let age = t - p.b; if (age < 0) age += T;
+    if (age > 1.3) continue;
+    ctx.save(); ctx.globalAlpha = (1 - age / 1.3) * (1 - s.d);
+    const r = 170 + p.sp * age;
+    ctx.translate(W / 2 + Math.cos(p.a) * r * 1.2, 560 + Math.sin(p.a) * r);
+    ctx.rotate(p.rot); const pop = Math.min(1, age * 8); ctx.scale(pop, pop);
+    ctx.font = `900 ${p.sz}px ${FONT}`; ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 10; ctx.strokeText(p.w, 0, 0);
+    ctx.fillStyle = colors[p.c]; ctx.fillText(p.w, 0, 0);
+    ctx.restore();
+  }
+
+  // 정색 말풍선 (소리와 같은 타이밍)
+  drawBubble('…', 520, 330, smooth(8.3, 8.4, t) * (1 - smooth(8.45, 8.5, t)) + smooth(9.3, 9.4, t) * (1 - smooth(10.1, 10.2, t)));
+  drawBubble('야옹.', 520, 330, smooth(8.45, 8.5, t) * (1 - smooth(9.25, 9.3, t)));
+  drawBubble('멍.', 520, 330, smooth(15.55, 15.6, t) + (t < 0.6 ? 1 - smooth(0.5, 0.6, t) : 0));
+
+  // 자막
+  const cap = caption(t);
+  ctx.font = `900 60px ${FONT}`; ctx.lineJoin = 'round'; ctx.textAlign = 'center';
+  const cw = ctx.measureText(cap).width;
+  if (cw > W - 60) ctx.font = `900 ${Math.floor(60 * (W - 60) / cw)}px ${FONT}`;
+  ctx.strokeStyle = LINE; ctx.lineWidth = 14; ctx.strokeText(cap, W / 2, 150);
+  ctx.fillStyle = '#fff'; ctx.fillText(cap, W / 2, 150);
+  ctx.font = `bold 34px ${FONT}`;
+  const warn = '[경고] 너무 웃으면 변신합니다';
+  const ww = ctx.measureText(warn).width + 48;
+  ctx.beginPath(); ctx.roundRect(W / 2 - ww / 2, 1150, ww, 64, 14); shape('#ffd23f');
+  ctx.fillStyle = LINE; ctx.textBaseline = 'middle'; ctx.fillText(warn, W / 2, 1184);
+}
+
+window.renderAt = render;
+const params = new URLSearchParams(location.search);
+if (params.has('capture')) {
+  document.body.classList.add('capture');
+  render(0);
+} else {
+  const snd = document.getElementById('snd'), btn = document.getElementById('play');
+  const start = performance.now();
+  btn.onclick = () => { snd.currentTime = 0; snd.play(); btn.remove(); };
+  (function loop() {
+    render(snd.paused ? (performance.now() - start) / 1000 : snd.currentTime);
+    requestAnimationFrame(loop);
+  })();
+}
+</script>
+</body>
+</html>
