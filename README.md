@@ -14,3 +14,12 @@
 - `rose-jjondeugi/rose-jjondeugi.mp4`: 완성 영상 (720x1280 세로, 소리 포함)
 - `rose-jjondeugi/index.html`: 브라우저에서 여는 애니메이션
 - 다시 만들기: `cd rose-jjondeugi && python3 prepare.py && python3 make_audio.py && node render.js` (numpy, pillow, playwright, ffmpeg 필요)
+
+## rose-jjondeugi-match: 장미, 그리고 쫀드기 (닮은꼴)
+
+장미와 쫀드기가 색과 모양이 닮았다는 데 초점을 맞춘 30초 영상입니다. 1막은 우아한 슬로우모션(하프·현악 왈츠), 2막은 같은 멜로디를 귀엽게(실로폰·우쿨렐레) 편곡했습니다.
+
+- `rose-jjondeugi-match/rose-jjondeugi-match.mp4`: 완성 영상 (720x1280 세로, 소리 포함)
+- `rose-jjondeugi-match/index.html`: 브라우저에서 여는 애니메이션
+- 글꼴: 고운바탕, 나눔명조, 주아 (SIL Open Font License, Google Fonts)
+- 다시 만들기: `cd rose-jjondeugi-match && python3 make_audio.py && node render.js` (numpy, playwright, ffmpeg 필요)
