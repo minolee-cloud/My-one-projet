@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>장미와 쫀드기</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; object-fit: contain; }
+  #play {
+    position: fixed; left: 50%; bottom: 8vh; transform: translateX(-50%);
+    font: bold 20px sans-serif; padding: 14px 28px; border: 0; border-radius: 999px;
+    background: #c4122f; color: #fff; cursor: pointer; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  }
+  body.capture canvas { height: auto; width: 720px; }
+  body.capture #play { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="720" height="1280"></canvas>
+<button id="play">▶ 소리 켜고 재생</button>
+<audio id="snd" src="rose-jjondeugi.wav" preload="auto"></audio>
+<script>
+// 24초 호러코믹: 평화로운 장미 → 꿈틀 → 쫀드기로 변신 → 장미가 다시 자라나 쫀드기를 먹어치움
+// 타임라인은 make_audio.py 와 같아야 소리가 맞는다. 좌표는 사진(2000x1126) 기준 월드 좌표.
+const W = 720, H = 1280, T = 24, PW = 2000, PH = 1126, S = H / PH;
+const FONT = '"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR","WenQuanYi Zen Hei",sans-serif';
+const STEM = [975, 802];          // 꽃받침 위, 꽃봉오리가 붙는 자리
+const BUD_AT = [737, 290], PIV = [238, 512];  // bud.png 위치와 그 안의 밑동
+const JJ = [1080, 1000, -0.1];    // 쫀드기가 떨어져 쉬는 자리 (x, y, 회전)
+const JL = 330, JH = 110;         // 쫀드기 크기
+const BITES = [15.64, 16.64, 17.64];
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const smooth = (a, b, x) => { const k = clamp((x - a) / (b - a)); return k * k * (3 - 2 * k); };
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+const between = (t, a, b) => t >= a && t < b;
+
+const imgs = {};
+const ready = Promise.all(Object.entries({ plate: 'plate.jpg', bud: 'bud.png', close: 'src/rose-close.jpg' })
+  .map(([k, src]) => new Promise(res => { const im = new Image(); im.onload = res; im.src = src; imgs[k] = im; })));
+
+// ---------- 카메라 ----------
+const CAM = [[0, 1, 987, 563], [3.5, 1.08, 987, 560], [5, 1.45, 990, 560], [7, 1.45, 990, 560], [7.8, 1, 987, 563],
+  [9.5, 1, 987, 563], [10.1, 1.3, 1060, 880], [11, 1.3, 1060, 880], [11.6, 1.05, 1000, 700], [13.5, 1.1, 1030, 760], [15, 1.5, 1090, 760],
+  [18.3, 1.5, 1090, 760], [19.2, 1.2, 1000, 650], [20.5, 1.1, 1000, 700], [22.4, 1.8, 975, 590], [24, 1.8, 975, 590]];
+const IMPULSES = [[3.5, 10], [7, 22], [7.6, 8], [13, 14], ...BITES.map(b => [b, 26]), [19.6, 10]];
+function camera(t) {
+  let i = 0; while (i < CAM.length - 2 && t >= CAM[i + 1][0]) i++;
+  const [t0, z0, x0, y0] = CAM[i], [t1, z1, x1, y1] = CAM[i + 1];
+  const k = smooth(t0, t1, t);
+  const z = lerp(z0, z1, k);
+  const hw = W / 2 / (S * z), hh = H / 2 / (S * z);
+  let shake = 0;
+  for (const [te, a] of IMPULSES) if (t >= te) shake += a * Math.exp(-(t - te) * 7);
+  return { z, cx: clamp(lerp(x0, x1, k), hw, PW - hw), cy: clamp(lerp(y0, y1, k), hh, PH - hh),
+    sx: Math.sin(t * 93) * shake, sy: Math.cos(t * 71) * shake };
+}
+function toScreen(c, x, y) { return [W / 2 + (x - c.cx) * S * c.z + c.sx, H / 2 + (y - c.cy) * S * c.z + c.sy]; }
+
+// ---------- 꽃봉오리 ----------
+const ASC = 0.62;                // 공격할 때 꽃봉오리 크기
+const HM = 0.7 * PIV[1] * ASC;   // 밑동에서 입까지 거리
+const ATK = 3.49;                // 공격 각도 (아래 왼쪽을 향함)
+function jjPoint(lx, ly = 0) { const c = Math.cos(JJ[2]), s = Math.sin(JJ[2]); return [JJ[0] + lx * c - ly * s, JJ[1] + lx * s + ly * c]; }
+function attackPose(k) {
+  const [tx, ty] = jjPoint(-JL / 2 + JL * (k + 0.5) / 3);
+  return { x: tx - HM * Math.sin(ATK), y: ty + HM * Math.cos(ATK), a: ATK };
+}
+const retreatPose = k => { const p = attackPose(k); return { x: p.x + 60, y: p.y - 90, a: ATK - 0.25 }; };
+const UP = { x: STEM[0], y: STEM[1], a: 0 };
+const mixPose = (p, q, k) => ({ x: lerp(p.x, q.x, k), y: lerp(p.y, q.y, k), a: lerp(p.a, q.a, k) });
+const elastic = k => k >= 1 ? 1 : 1 - Math.pow(2, -9 * k) * Math.cos(k * 13);
+
+function budState(t) {
+  const b = { show: true, pose: UP, sc: 1, sx: 1, sy: 1, open: 0, eyes: 0, jx: 0 };
+  if (t < 7) {
+    const tr = smooth(5, 7, t);
+    b.jx = Math.sin(t * 60) * 14 * tr;
+    b.pose = { ...UP, a: Math.sin(t * 1.2) * 0.012 + Math.sin(t * 45) * 0.1 * tr };
+    const sq = smooth(6.3, 7, t);
+    b.sx = lerp(1, 1.5, sq) * (1 + 0.06 * Math.sin(t * 30) * tr); b.sy = lerp(1, 0.35, sq);
+  } else if (t < 11.6) b.show = false;
+  else if (t < 14) {
+    b.sc = 0.8 * elastic((t - 11.6) / 1.4);
+    b.eyes = smooth(12.95, 13.05, t);
+    b.pose = { ...UP, a: Math.sin(t * 2) * 0.04 + 0.25 * smooth(13.3, 14, t) };
+  } else if (t < 15.2) {
+    b.sc = lerp(0.8, ASC, smooth(14, 15.2, t)); b.eyes = 1;
+    b.pose = mixPose({ ...UP, a: 0.25 }, retreatPose(0), smooth(14, 15.2, t));
+    b.open = 0.5 * smooth(14.4, 15.2, t);
+  } else if (t < 18.2) {
+    b.sc = ASC; b.eyes = 1;
+    const k = Math.floor(t - 15.2), p = t - 15.2 - k;
+    const prev = k === 0 ? retreatPose(0) : attackPose(k - 1);
+    if (p < 0.3) { b.pose = mixPose(prev, retreatPose(k), smooth(0, 0.3, p)); b.open = 0.5; }
+    else if (p < 0.42) { b.pose = mixPose(retreatPose(k), attackPose(k), smooth(0.3, 0.42, p)); b.open = 0.55; }
+    else { b.pose = attackPose(k); b.open = 0.55 * (1 - smooth(0.42, 0.46, p)) + 0.06 * Math.abs(Math.sin(p * 30)) * smooth(0.5, 0.6, p); }
+  } else {
+    b.sc = lerp(ASC, 0.8, smooth(18.2, 19.2, t)) + 0.1 * smooth(20.5, 22.4, t); b.eyes = 1;
+    b.pose = mixPose(attackPose(2), UP, smooth(18.2, 19.2, t));
+    b.open = t < 19.6 ? 0.08 * Math.abs(Math.sin(t * 14)) : t < 20.2 ? 0.28 * Math.sin(Math.PI * (t - 19.6) / 0.6) : 0.32 * smooth(20.8, 22.2, t);
+  }
+  return b;
+}
+
+function drawNeck(p) {
+  const d = Math.hypot(p.x - STEM[0], p.y - STEM[1]);
+  if (d < 4) return;
+  ctx.beginPath(); ctx.moveTo(STEM[0], STEM[1] + 10);
+  ctx.quadraticCurveTo((STEM[0] + p.x) / 2, (STEM[1] + p.y) / 2 - 20, p.x, p.y);
+  ctx.lineCap = 'round'; ctx.strokeStyle = '#1f3315'; ctx.lineWidth = 30; ctx.stroke();
+  ctx.strokeStyle = '#5e8a3c'; ctx.lineWidth = 20; ctx.stroke();
+}
+
+function drawEye(x, y, glow) {
+  if (glow <= 0) return;
+  ctx.save(); ctx.globalAlpha = glow;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, 70);
+  g.addColorStop(0, 'rgba(255,40,40,0.9)'); g.addColorStop(1, 'rgba(255,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(x - 70, y - 70, 140, 140);
+  ctx.beginPath(); ctx.ellipse(x, y, 26, 18, 0, 0, Math.PI * 2); ctx.fillStyle = '#ffe9e0'; ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x, y, 7, 15, 0, 0, Math.PI * 2); ctx.fillStyle = '#b00010'; ctx.fill();
+  ctx.restore();
+}
+
+function drawBud(b) {
+  if (!b.show || b.sc <= 0.01) return;
+  const { x, y, a } = b.pose;
+  drawNeck(b.pose);
+  ctx.save();
+  ctx.translate(x + b.jx, y); ctx.rotate(a); ctx.scale(b.sc * b.sx, b.sc * b.sy); ctx.translate(-PIV[0], -PIV[1]);
+  const im = imgs.bud, split = PIV[0] + 12, R = PIV[1] + 20;
+  if (b.open > 0.01) {
+    // 입 속: 밑동을 축으로 벌어지는 쐐기
+    ctx.save(); ctx.translate(PIV[0], PIV[1]);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, R * 0.95, -Math.PI / 2 - b.open, -Math.PI / 2 + b.open); ctx.closePath();
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0, '#120004'); g.addColorStop(1, '#6d0a1c'); ctx.fillStyle = g; ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, -R * 0.25, R * 0.12 + 200 * b.open * 0.3, R * 0.2, 0, 0, Math.PI * 2); ctx.fillStyle = '#c43c5a'; ctx.fill();
+    ctx.restore();
+  }
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(PIV[0], PIV[1]); ctx.rotate(side * b.open); ctx.translate(-PIV[0], -PIV[1]);
+    ctx.save(); ctx.beginPath();
+    ctx.rect(side < 0 ? -50 : split, -50, side < 0 ? split + 50 : im.width, im.height + 100);
+    ctx.clip(); ctx.drawImage(im, 0, 0); ctx.restore();
+    if (b.open > 0.01) {  // 자른 면에서 입 안쪽을 향하는 이빨
+      ctx.fillStyle = '#fbf6e9'; ctx.strokeStyle = '#3b0b10'; ctx.lineWidth = 3;
+      for (let d = 120; d < R - 60; d += 46) {
+        const ty = PIV[1] - d;
+        ctx.beginPath(); ctx.moveTo(split, ty - 18); ctx.lineTo(split - side * 34, ty); ctx.lineTo(split, ty + 18);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+      }
+    }
+    drawEye(side < 0 ? 150 : 330, 250, b.eyes);
+    if (b.eyes > 0) {  // 화난 눈썹
+      ctx.globalAlpha = b.eyes; ctx.strokeStyle = '#2a0006'; ctx.lineWidth = 14; ctx.lineCap = 'round';
+      const ex = side < 0 ? 150 : 330;
+      ctx.beginPath(); ctx.moveTo(ex - side * 34, 205); ctx.lineTo(ex + side * 28, 225); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// ---------- 쫀드기 ----------
+function jjState(t) {
+  const j = { show: t >= 7 && t < BITES[2], x: JJ[0], y: JJ[1], r: JJ[2], sc: 1, sx: 1, sy: 1, eaten: 0, face: 'dizzy', jit: 0 };
+  if (t < 7.6) {
+    const k = clamp((t - 7) / 0.6);
+    j.x = lerp(987, JJ[0], k); j.y = lerp(560, JJ[1], k) - 300 * 4 * k * (1 - k);
+    j.r = lerp(0, JJ[2] + Math.PI * 2, k); j.sc = lerp(0.5, 1, k);
+  } else if (t < 8.2) {
+    const k = (t - 7.6) / 0.6;
+    j.sy = 1 - 0.3 * Math.exp(-k * 5) * Math.cos(k * 16); j.sx = 2 - j.sy;
+  }
+  if (t >= 9.5 && t < 11) { j.face = 'happy'; j.r += Math.sin(t * 9) * 0.07; j.y -= Math.abs(Math.sin(t * 6)) * 18; }
+  if (t >= 11) { j.face = 'scared'; j.jit = t < 15 ? 3 : 7; }
+  if (t >= 15) j.face = 'scream';
+  j.x += Math.sin(t * 87) * j.jit;
+  j.eaten = BITES.filter(b => t >= b).length / 3;
+  return j;
+}
+
+let jjCanvas;
+function drawJjondeugi(j, t) {
+  if (!j.show) return;
+  if (!jjCanvas) { jjCanvas = document.createElement('canvas'); jjCanvas.width = 460; jjCanvas.height = 240; }
+  const c = jjCanvas.getContext('2d');
+  c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, 460, 240); c.translate(230, 120);
+  // 물결치는 납작한 띠
+  const shape = () => {
+    c.beginPath();
+    for (let i = 0; i <= 40; i++) { const x = -JL / 2 + JL * i / 40; c.lineTo(x, -JH / 2 + Math.sin(i * 1.3) * 4); }
+    for (let i = 40; i >= 0; i--) { const x = -JL / 2 + JL * i / 40; c.lineTo(x, JH / 2 + Math.sin(i * 1.1 + 1) * 4); }
+    c.closePath();
+  };
+  shape();
+  const g = c.createLinearGradient(0, -JH / 2, 0, JH / 2);
+  g.addColorStop(0, '#ffc94a'); g.addColorStop(1, '#f39a1e'); c.fillStyle = g; c.fill();
+  c.save(); c.clip();
+  c.fillStyle = 'rgba(226,40,60,0.75)';  // 장미 줄무늬
+  for (let x = -JL / 2 - 60; x < JL / 2; x += 70) { c.beginPath(); c.moveTo(x, -JH); c.lineTo(x + 26, -JH); c.lineTo(x + 66, JH); c.lineTo(x + 40, JH); c.fill(); }
+  c.fillStyle = 'rgba(110,50,10,0.35)';  // 구운 자국
+  for (let x = -JL / 2; x < JL / 2; x += 38) c.fillRect(x, -JH / 2, 9, JH);
+  for (let i = 0; i < 18; i++) { c.beginPath(); c.arc(-JL / 2 + hash(i) * JL, -JH / 2 + hash(i + 50) * JH, 3 + hash(i + 9) * 5, 0, 7); c.fill(); }
+  c.fillStyle = 'rgba(255,255,255,0.35)'; c.fillRect(-JL / 2, -JH / 2 + 10, JL, 12);
+  c.restore();
+  shape(); c.strokeStyle = '#5a2a08'; c.lineWidth = 5; c.stroke();
+  drawFace(c, j.face, t);
+  if (j.eaten > 0) {  // 먹힌 부분: 왼쪽부터, 이빨 자국 모양으로
+    c.globalCompositeOperation = 'destination-out';
+    const ex = -JL / 2 + JL * j.eaten;
+    c.fillRect(-240, -130, ex + 240, 260);
+    for (let y = -JH / 2; y <= JH / 2; y += 26) { c.beginPath(); c.arc(ex, y, 17, 0, 7); c.fill(); }
+    c.globalCompositeOperation = 'source-over';
+  }
+  ctx.save(); ctx.translate(j.x, j.y); ctx.rotate(j.r); ctx.scale(j.sc * j.sx, j.sc * j.sy);
+  ctx.drawImage(jjCanvas, -230, -120);
+  ctx.restore();
+}
+
+function drawFace(c, face, t) {
+  const fx = 80, ey = -14;
+  c.lineCap = 'round'; c.strokeStyle = '#3a1a05'; c.lineWidth = 6; c.fillStyle = '#3a1a05';
+  const eye = (x, r, pr, px = 0, py = 0) => { c.beginPath(); c.arc(x, ey, r, 0, 7); c.fillStyle = '#fff'; c.fill(); c.stroke(); c.beginPath(); c.arc(x + px, ey + py, pr, 0, 7); c.fillStyle = '#1a0b02'; c.fill(); };
+  if (face === 'dizzy') {
+    for (const x of [fx - 34, fx + 34]) { c.beginPath(); for (let a = 0; a < 12; a += 0.3) c.lineTo(x + Math.cos(a + t * 8) * a * 1.4, ey + Math.sin(a + t * 8) * a * 1.4); c.stroke(); }
+    c.beginPath(); c.moveTo(fx - 14, 26); c.quadraticCurveTo(fx, 18, fx + 14, 26); c.stroke();
+  } else if (face === 'happy') {
+    for (const x of [fx - 34, fx + 34]) { c.beginPath(); c.moveTo(x - 14, ey + 4); c.quadraticCurveTo(x, ey - 16, x + 14, ey + 4); c.stroke(); }
+    c.beginPath(); c.moveTo(fx - 20, 16); c.quadraticCurveTo(fx, 40, fx + 20, 16); c.closePath(); c.fillStyle = '#7a1f12'; c.fill(); c.stroke();
+    c.fillStyle = 'rgba(255,90,120,0.5)'; for (const x of [fx - 58, fx + 58]) { c.beginPath(); c.ellipse(x, 10, 12, 7, 0, 0, 7); c.fill(); }
+  } else {
+    const scream = face === 'scream';
+    eye(fx - 34, 18, scream ? 4 : 5, Math.sin(t * 20) * 3, 0); eye(fx + 34, 18, scream ? 4 : 5, Math.sin(t * 20) * 3, 0);
+    if (scream) { c.beginPath(); c.ellipse(fx, 30, 16, 20, 0, 0, 7); c.fillStyle = '#4a0b06'; c.fill(); c.stroke(); }
+    else { c.beginPath(); for (let i = 0; i <= 8; i++) c.lineTo(fx - 22 + i * 5.5, 28 + (i % 2 ? -5 : 5)); c.stroke(); }
+    c.fillStyle = '#8fd3ff';  // 식은땀
+    const p = (t * 1.5) % 1;
+    c.beginPath(); c.ellipse(fx + 66, -36 + p * 40, 7, 11, 0, 0, 7); c.fill();
+    c.beginPath(); c.ellipse(fx - 70, -30 + ((p + 0.5) % 1) * 40, 6, 9, 0, 0, 7); c.fill();
+  }
+}
+
+// ---------- 효과 ----------
+function drawPuff(t, x, y, t0, dur, n, size, col) {
+  if (!between(t, t0, t0 + dur)) return;
+  const k = (t - t0) / dur;
+  ctx.save();
+  for (let i = 0; i < n; i++) {
+    const a = hash(i + t0) * Math.PI * 2, r = (40 + 220 * hash(i + 3 + t0)) * Math.sqrt(k) * size;
+    ctx.globalAlpha = (1 - k) * 0.9;
+    ctx.beginPath(); ctx.arc(x + Math.cos(a) * r, y + Math.sin(a) * r * 0.8, (50 + 40 * hash(i + 7)) * size * (0.6 + k), 0, 7);
+    ctx.fillStyle = col; ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawCrumbs(t) {
+  for (const [k, bt] of BITES.entries()) {
+    const age = t - bt; if (age < 0 || age > 1.4) continue;
+    const [bx, by] = jjPoint(-JL / 2 + JL * (k + 0.5) / 3);
+    ctx.save(); ctx.globalAlpha = 1 - age / 1.4;
+    for (let i = 0; i < 16; i++) {
+      const vx = (hash(i + k * 20) - 0.5) * 700, vy = -200 - 400 * hash(i + 5 + k * 20);
+      const x = bx + vx * age, y = by + vy * age + 900 * age * age;
+      ctx.fillStyle = i % 3 ? '#f5a623' : '#d8263a';
+      ctx.fillRect(x - 7, y - 5, 14 + 6 * hash(i), 10);
+    }
+    ctx.restore();
+  }
+}
+
+function popText(text, x, y, t, t0, dur, size, fill) {
+  if (!between(t, t0, t0 + dur)) return;
+  const age = t - t0, pop = Math.min(1, age * 10) * (1 + 0.15 * Math.exp(-age * 10));
+  ctx.save(); ctx.globalAlpha = 1 - smooth(dur - 0.2, dur, age);
+  ctx.translate(x, y); ctx.rotate(-0.12); ctx.scale(pop, pop);
+  ctx.font = `900 ${size}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 16; ctx.strokeText(text, 0, 0);
+  ctx.fillStyle = fill; ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
+function bubble(text, x, y, t, t0, t1) {
+  if (!between(t, t0, t1)) return;
+  ctx.save(); ctx.globalAlpha = smooth(t0, t0 + 0.08, t) * (1 - smooth(t1 - 0.08, t1, t));
+  ctx.font = `bold 40px ${FONT}`; const w = ctx.measureText(text).width + 50;
+  ctx.beginPath(); ctx.roundRect(x - w / 2, y - 38, w, 76, 38);
+  ctx.moveTo(x - 10, y + 36); ctx.lineTo(x + 10, y + 70); ctx.lineTo(x + 30, y + 36);
+  ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 5; ctx.stroke();
+  ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y + 2);
+  ctx.restore();
+}
+
+const CAPS = [[0, 3.5, '평화로운 정원의 장미 한 송이', 'calm'], [3.6, 5, '그런데… 꽃잎이 움직였다', 'horror'],
+  [5, 7, '으… 으어어어…', 'horror'], [7.1, 9.5, '장미가… 쫀드기가 됐다?!', 'comic'], [9.5, 11, '쫀드기: 휴, 살았다~', 'comic'],
+  [11.3, 14, '그런데… 뭔가 다시 자라난다', 'horror'], [14, 18.4, '배고픈 장미의 습격', 'horror'],
+  [18.4, 20.5, '…냠.', 'comic'], [20.5, 22.4, '다음 쫀드기는… 너야.', 'horror']];
+function drawCaption(t) {
+  const cap = CAPS.find(c => between(t, c[0], c[1])); if (!cap) return;
+  const [t0, , text, style] = cap;
+  ctx.save();
+  ctx.font = `900 56px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  const w = ctx.measureText(text).width;
+  if (w > W - 60) ctx.font = `900 ${Math.floor(56 * (W - 60) / w)}px ${FONT}`;
+  const y = 150, tw = Math.min(w, W - 60);
+  if (style === 'horror') {
+    ctx.fillStyle = '#b3001b';  // 흘러내리는 핏물
+    for (let i = 0; i < 9; i++) {
+      const x = W / 2 - tw / 2 + hash(i + t0) * tw, len = Math.min(1, (t - t0) * 0.8) * (20 + 60 * hash(i + 1 + t0));
+      ctx.beginPath(); ctx.roundRect(x - 4, y + 10, 8, len, 4); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y + 12 + len, 6, 0, 7); ctx.fill();
+    }
+  }
+  ctx.strokeStyle = style === 'horror' ? '#000' : '#1a1a1a'; ctx.lineWidth = 14; ctx.strokeText(text, W / 2, y);
+  ctx.fillStyle = style === 'horror' ? '#e3122f' : style === 'comic' ? '#ffd23f' : '#ffffff';
+  ctx.fillText(text, W / 2, y);
+  ctx.restore();
+}
+
+// 호러 분위기 정도 (0 밝음 ~ 1 어두움)
+function horror(t) {
+  if (t < 3.5) return 0;
+  if (t < 7) return 1;
+  if (t < 11) return 1 - smooth(7, 7.3, t);
+  if (t < 11.6) return hash(Math.floor(t * 20)) > 0.45 ? 1 : 0.15;  // 전등 깜빡
+  if (between(t, 18.4, 20.5)) return 0.6;
+  return 1;
+}
+
+// ---------- 렌더 ----------
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.filter = 'none';
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  if (t >= 22.4) return endCard(t);
+  const hz = horror(t);
+
+  if (between(t, 4, 5)) {
+    // 클로즈업 컷: 기울어진 앵글, 심장박동 줌
+    const k = (t - 4), beat = Math.exp(-((t * 2.2) % 1) * 6) * 0.04;
+    const z = 1.2 + 0.2 * k + beat;
+    ctx.save(); ctx.translate(W / 2, H / 2); ctx.rotate(-0.13); ctx.scale(S * z, S * z); ctx.translate(-915, -565);
+    ctx.filter = 'brightness(0.6) saturate(0.7) contrast(1.25)';
+    ctx.drawImage(imgs.close, 0, 0, PW, PH);
+    ctx.restore(); ctx.filter = 'none';
+    ctx.fillStyle = 'rgba(120,0,10,0.28)'; ctx.fillRect(0, 0, W, H);
+  } else {
+    const c = camera(t);
+    ctx.save();
+    ctx.translate(W / 2 + c.sx, H / 2 + c.sy); ctx.scale(S * c.z, S * c.z); ctx.translate(-c.cx, -c.cy);
+    ctx.filter = `brightness(${lerp(1.05, 0.5, hz)}) saturate(${lerp(1.12, 0.65, hz)}) contrast(${lerp(1, 1.2, hz)})`;
+    ctx.drawImage(imgs.plate, 0, 0, PW, PH);
+    const b = budState(t);
+    ctx.filter = `brightness(${lerp(1, 0.75, hz)})`;
+    drawJjondeugi(jjState(t), t);
+    ctx.filter = `brightness(${lerp(1.05, 0.5, hz)}) saturate(${lerp(1.12, 0.65, hz)}) contrast(${lerp(1, 1.2, hz)})`;
+    drawBud(b);
+    ctx.filter = 'none';
+    drawPuff(t, 987, 560, 6.95, 0.7, 16, 1, '#f2efe9');
+    drawPuff(t, b.pose.x, b.pose.y - 300, 19.6, 0.9, 10, 0.55, 'rgba(170,200,120,0.8)');
+    drawCrumbs(t);
+    ctx.restore();
+
+    // 화면 좌표 텍스트
+    const jpos = toScreen(c, JJ[0] + 60, JJ[1] - 150);
+    bubble('휴~ 살았다!', ...jpos, t, 9.6, 11);
+    bubble('으아악!', ...jpos, t, 15.0, 15.6);
+    popText('펑!', W / 2, 560, t, 7.0, 0.6, 120, '#ffd23f');
+    BITES.forEach((bt, k) => { const [x, y] = toScreen(c, ...jjPoint(-JL / 2 + JL * (k + 0.5) / 3)); popText(['와구!', '와구와구!', '꿀꺽!'][k], x, y - 160, t, bt, 0.7, 84, '#ff3b3b'); });
+    const hp = toScreen(c, STEM[0] + 130, STEM[1] - 420);
+    popText('꺼억~', hp[0], hp[1], t, 19.6, 0.9, 78, '#a6e05a');
+  }
+
+  // 조명: 어두운 푸른빛 + 비네팅
+  ctx.fillStyle = `rgba(20,0,40,${0.3 * hz})`; ctx.fillRect(0, 0, W, H);
+  const vg = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.75);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, `rgba(0,0,0,${0.25 + 0.6 * hz})`);
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+
+  // 글리치 (변신 직전)
+  const gl = smooth(5.2, 7, t) * (t < 7 ? 1 : 0);
+  if (gl > 0 && hash(Math.floor(t * 15)) < 0.6) {
+    for (let i = 0; i < 6; i++) {
+      const y = hash(i + Math.floor(t * 15) * 7) * H, h = 20 + 60 * hash(i + 3), dx = (hash(i + 11 + Math.floor(t * 15)) - 0.5) * 80 * gl;
+      ctx.drawImage(cv, 0, y, W, h, dx, y, W, h);
+    }
+    ctx.fillStyle = `rgba(255,0,60,${0.12 * gl})`; ctx.fillRect(0, 0, W, H);
+  }
+  // 번개, 변신 섬광
+  const flash = Math.max(between(t, 3.5, 4) ? Math.exp(-(t - 3.5) * 9) : 0, between(t, 6.95, 7.4) ? Math.exp(-(t - 6.95) * 7) : 0);
+  if (flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${flash})`; ctx.fillRect(0, 0, W, H); }
+
+  drawCaption(t);
+}
+
+function endCard(t) {
+  if (t < 22.6) return;
+  ctx.save();
+  ctx.font = `900 92px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.globalAlpha = smooth(22.6, 23, t);
+  ctx.fillStyle = '#c4122f'; ctx.fillText('THE END…?', W / 2, H / 2);
+  ctx.globalAlpha = smooth(23.2, 23.3, t);
+  ctx.font = `bold 34px ${FONT}`; ctx.fillStyle = '#a6e05a'; ctx.fillText('(꺼억)', W / 2 + 150, H / 2 + 90);
+  ctx.restore();
+}
+
+window.ready = ready;
+window.renderAt = render;
+if (new URLSearchParams(location.search).has('capture')) {
+  document.body.classList.add('capture');
+} else {
+  const snd = document.getElementById('snd'), btn = document.getElementById('play');
+  let start = performance.now();
+  btn.onclick = () => { snd.currentTime = 0; snd.play(); btn.remove(); };
+  ready.then(function loop() {
+    let t = snd.paused ? ((performance.now() - start) / 1000) % (T + 1) : snd.currentTime;
+    if (snd.ended) { snd.currentTime = 0; snd.play(); }
+    render(Math.min(t, T));
+    requestAnimationFrame(loop);
+  });
+}
+</script>
+</body>
+</html>

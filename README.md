@@ -6,3 +6,11 @@
 - `laugh-loop/laugh-loop.mp4`: 완성 영상 (720x1280 세로, 쇼츠/릴스용, 소리 포함)
 - `laugh-loop/index.html`: 브라우저에서 여는 애니메이션 (버튼을 누르면 소리와 함께 재생)
 - 다시 만들기: `cd laugh-loop && python3 make_audio.py && node render.js` (numpy, playwright, ffmpeg 필요)
+
+## rose-jjondeugi: 장미와 쫀드기 (호러코믹)
+
+평화로운 장미가 꿈틀대다 쫀드기로 변하고, 다시 자라난 장미가 그 쫀드기를 먹어치우는 24초 호러코믹 영상입니다. 직접 찍은 장미 사진에서 꽃봉오리를 오려내 움직였습니다.
+
+- `rose-jjondeugi/rose-jjondeugi.mp4`: 완성 영상 (720x1280 세로, 소리 포함)
+- `rose-jjondeugi/index.html`: 브라우저에서 여는 애니메이션
+- 다시 만들기: `cd rose-jjondeugi && python3 prepare.py && python3 make_audio.py && node render.js` (numpy, pillow, playwright, ffmpeg 필요)
