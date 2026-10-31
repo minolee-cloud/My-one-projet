@@ -43,8 +43,8 @@ const fadeIO = (t, a, b, f = 0.4) => smooth(a, a + f, t) * (1 - smooth(b - f, b,
 const beatPulse = t => t < ACT2 ? 0 : Math.exp(-(((t - ACT2) / BEAT) % 1) * 5);
 
 const imgs = {};
-const SRC = { plate: 'plate.jpg', bud: 'bud.png', close: 'src/rose-close.jpg', strip: 'strip.png',
-  jjClose: 'src/jj-closeup.jpg', jjPlate: 'src/jj-plate.jpg', jjGrilled: 'src/jj-grilled.jpg' };
+const SRC = { plate: 'plate.jpg', bud: 'bud.png', close: 'src/rose-close.jpg',
+  strip: 'strip.png', stripGrilled: 'strip-grilled.png', jjClose: 'closeup.jpg' };  // 쫀드기는 make_jjondeugi.py 로 그린 것
 const ready = Promise.all([
   ...Object.entries(SRC).map(([k, src]) => new Promise(res => { const im = new Image(); im.onload = res; im.src = src; imgs[k] = im; })),
   ...['700 40px "Gowun Batang"', '40px "Nanum Myeongjo"', '40px Jua'].map(f => document.fonts.load(f, '장미쫀드기')),
@@ -154,10 +154,10 @@ function jjRose(leafK, bite) {
   }
   drawRoll(c, LS, 1);
   if (bite > 0) {
-    c.globalCompositeOperation = 'destination-out';
-    const bx = g.cx + 175, by = g.cy - 150;
-    for (let i = 0; i < 6; i++) { const a = -2.4 + i * 0.55; c.beginPath(); c.arc(bx + Math.cos(a) * 50, by + Math.sin(a) * 50, 40, 0, 7); c.fill(); }
-    c.beginPath(); c.arc(bx, by, 70, 0, 7); c.fill();
+    c.globalCompositeOperation = 'destination-out'; c.fillStyle = '#000';
+    const bx = g.cx + 165, by = g.cy - 140;
+    for (let i = 0; i < 7; i++) { const a = 1.2 + i * 0.6; c.beginPath(); c.arc(bx + Math.cos(a) * 80, by + Math.sin(a) * 80, 34, 0, 7); c.fill(); }
+    c.beginPath(); c.arc(bx, by, 95, 0, 7); c.fill();
     c.globalCompositeOperation = 'source-over';
   }
   return roseCanvas;
@@ -205,15 +205,38 @@ function pastel(t, a, b) {
   ctx.restore();
 }
 
-function card(img, ww, wh, x, y, w, h, rot, sc, crop) {
+function card(x, y, w, h, rot, sc, draw) {
   ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(sc, sc);
   ctx.shadowColor = 'rgba(160,60,40,0.35)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 12;
   ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.roundRect(-w / 2 - 14, -h / 2 - 14, w + 28, h + 28, 28); ctx.fill();
   ctx.shadowColor = 'transparent';
   ctx.beginPath(); ctx.roundRect(-w / 2, -h / 2, w, h, 18); ctx.clip();
-  const [cx, cy, cw, ch] = crop, s = Math.max(w / cw, h / ch);
-  ctx.drawImage(img, cx, cy, cw, ch, -cw * s / 2, -ch * s / 2, cw * s, ch * s);
+  draw(w, h);
   ctx.restore();
+}
+
+function strip(im, x, y, len, th, rot) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  ctx.shadowColor = 'rgba(120,40,0,0.3)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  ctx.drawImage(im, -len / 2, -th / 2, len, th);
+  ctx.restore();
+}
+function drawPlateCard(w, h) {  // 접시 위에 가지런히 놓인 쫀드기
+  ctx.fillStyle = '#dfe8d8'; ctx.fillRect(-w / 2, -h / 2, w, h);
+  ctx.fillStyle = '#efe3c4'; ctx.fillRect(0, -h / 2, w / 2, h / 2); ctx.fillStyle = '#c9b39a'; ctx.fillRect(-w / 2, 0, w / 2, h / 2);
+  ctx.beginPath();
+  for (let i = 0; i <= 48; i++) { const a = i / 48 * Math.PI * 2, r = 1 + 0.03 * Math.cos(a * 12); ctx.lineTo(Math.cos(a) * w * 0.44 * r, Math.sin(a) * h * 0.46 * r); }
+  ctx.fillStyle = '#fbfbf8'; ctx.fill(); ctx.strokeStyle = '#d9d4cb'; ctx.lineWidth = 3; ctx.stroke();
+  for (let i = 0; i < 6; i++) strip(imgs.strip, -10 + i * 8, -110 + i * 44, w * 0.9, 50, -0.3);
+}
+function drawGrilledCard(w, h) {  // 종이 위에 흩어진 구운 쫀드기
+  const g = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, '#eeeae4'); g.addColorStop(1, '#fbfaf7');
+  ctx.fillStyle = g; ctx.fillRect(-w / 2, -h / 2, w, h);
+  for (let i = 0; i < 11; i++) {
+    const len = 260 + 200 * hash(i + 40), th = 30 + 16 * hash(i + 41);
+    strip(imgs.stripGrilled, (hash(i + 42) - 0.5) * 160, -h / 2 + 50 + i * (h - 100) / 10, len, th, (hash(i + 43) - 0.5) * 0.5);
+  }
 }
 
 function heart(x, y, s, col) {
@@ -254,7 +277,7 @@ function sceneSplit(t) {  // 13.4~15.5초: 위는 꽃잎, 아래는 쫀드기. �
   shot(imgs.close, ...ROSE_W, 1035, 640, S * 2.6 * (1 + 0.04 * (t - 13.4)), Math.PI / 2 - 0.1, W / 2 - slide * W, H / 4);
   ctx.restore();
   ctx.save(); ctx.beginPath(); ctx.rect(0, H / 2, W, H / 2); ctx.clip();
-  shot(imgs.jjClose, 923, 582, 560, 362, 2.4 * (1 + 0.04 * (t - 13.4)), 0.45, W / 2 + slide * W, H * 3 / 4);
+  shot(imgs.jjClose, 1600, 900, 800, 470, 0.78 * (1 + 0.04 * (t - 13.4)), -0.08, W / 2 + slide * W, H * 3 / 4);
   ctx.restore();
   ctx.fillStyle = '#f3d9a4'; ctx.fillRect(0, H / 2 - 2, W, 4);
 }
@@ -263,10 +286,10 @@ function sceneReveal(t) {  // 15.5~17.6초: 귀여운 2막, 쫀드기 사진
   const b = beatPulse(t);
   if (t < 16.6) {
     const pop = elasticIn(t - ACT2);
-    card(imgs.jjPlate, 800, 500, W / 2, 650, 560, 420, -0.05 + 0.02 * Math.sin(t * 6), pop * (1 + 0.03 * b), [60, 20, 700, 450]);
+    card(W / 2, 650, 560, 420, -0.05 + 0.02 * Math.sin(t * 6), pop * (1 + 0.03 * b), drawPlateCard);
   } else {
     const pop = elasticIn(t - 16.6);
-    card(imgs.jjGrilled, 620, 827, W / 2, 680, 480, 600, 0.05 + 0.02 * Math.sin(t * 6), pop * (1 + 0.03 * b), [0, 150, 620, 650]);
+    card(W / 2, 680, 480, 600, 0.05 + 0.02 * Math.sin(t * 6), pop * (1 + 0.03 * b), drawGrilledCard);
   }
 }
 const elasticIn = a => a <= 0 ? 0 : a >= 1 ? 1 : 1 - Math.pow(2, -10 * a) * Math.cos(a * 18);

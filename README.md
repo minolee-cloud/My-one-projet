@@ -21,5 +21,6 @@
 
 - `rose-jjondeugi-match/rose-jjondeugi-match.mp4`: 완성 영상 (720x1280 세로, 소리 포함)
 - `rose-jjondeugi-match/index.html`: 브라우저에서 여는 애니메이션
+- 쫀드기는 사진 대신 `make_jjondeugi.py` 로 직접 그렸습니다 (줄무늬, 결, 설탕 알갱이, 구운 자국)
 - 글꼴: 고운바탕, 나눔명조, 주아 (SIL Open Font License, Google Fonts)
-- 다시 만들기: `cd rose-jjondeugi-match && python3 make_audio.py && node render.js` (numpy, playwright, ffmpeg 필요)
+- 다시 만들기: `cd rose-jjondeugi-match && python3 make_jjondeugi.py && python3 make_audio.py && node render.js` (numpy, pillow, playwright, ffmpeg 필요)
